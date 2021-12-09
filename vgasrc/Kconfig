@@ -64,6 +64,14 @@ menu "VGA ROM"
                 Build support for a vgabios wrapper around video
                 devices initialized using coreboot native vga init.
 
+        config VGA_CSM
+            depends on CSM
+            bool "CSM linear framebuffer"
+            select VGA_EMULATE_TEXT
+            help
+                Build support for a vgabios wrapper around video
+                devices initialized using UEFI native vga init.
+
         config DISPLAY_BOCHS
             depends on QEMU
             bool "qemu bochs-display support"
@@ -173,7 +181,7 @@ menu "VGA ROM"
             Support VBE.
 
     config VGA_PCI
-        depends on BUILD_VGABIOS && !VGA_COREBOOT
+        depends on BUILD_VGABIOS && !VGA_COREBOOT && !VGA_CSM
         bool "PCI ROM Headers"
         default y
         help

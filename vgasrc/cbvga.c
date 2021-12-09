@@ -273,3 +273,46 @@ cbvga_setup(void)
     cbvga_setup_modes(addr, bpp, xlines, ylines, linelength);
     return 0;
 }
+
+#pragma pack(1)
+struct csm_vga_table {
+    u32 signature;
+
+    u32 physical_address;
+    u32 bbp;
+    u32 x_resolution;
+    u32 y_resolution;
+    u32 bytes_per_line;
+};
+#pragma pack()
+
+#define SIGNATURE_16(A, B)        ((A) | (B << 8))
+#define SIGNATURE_32(A, B, C, D)  (SIGNATURE_16 (A, B) | (SIGNATURE_16 (C, D) << 16))
+
+#define CSM_VGA_TABLE_SIGNATURE SIGNATURE_32 ('C', 'V', 'G', '$')
+
+struct csm_vga_table csm_vga VAR16 __aligned(16) = {
+    .signature = CSM_VGA_TABLE_SIGNATURE,
+};
+
+int
+csmvga_setup(void)
+{
+    dprintf(1, "csm vga init\n");
+
+    if (GET_GLOBAL(HaveRunInit))
+        return 0;
+
+    if (!GET_GLOBAL(csm_vga.physical_address)) {
+        dprintf(1, "No CSM VGA table, exiting\n");
+        return -1;
+    }
+
+    cbvga_setup_modes(GET_GLOBAL(csm_vga.physical_address),
+                    GET_GLOBAL(csm_vga.bbp),
+                    GET_GLOBAL(csm_vga.x_resolution),
+                    GET_GLOBAL(csm_vga.y_resolution),
+                    GET_GLOBAL(csm_vga.bytes_per_line));
+
+    return 0;
+}

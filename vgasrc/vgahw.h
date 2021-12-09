@@ -57,6 +57,8 @@ static inline int vgahw_setup(void) {
         return geodevga_setup();
     if (CONFIG_VGA_COREBOOT)
         return cbvga_setup();
+    if (CONFIG_VGA_CSM)
+        return csmvga_setup();
     if (CONFIG_DISPLAY_BOCHS)
         return bochs_display_setup();
     if (CONFIG_VGA_RAMFB)

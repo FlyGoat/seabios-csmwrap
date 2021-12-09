@@ -20,6 +20,7 @@ int cbvga_set_mode(struct vgamode_s *vmode_g, int flags);
 int cbvga_get_linesize(struct vgamode_s *vmode_g);
 void cbvga_setup_modes(u64 addr, u8 bpp, u32 xlines, u32 ylines, u32 linelength);
 int cbvga_setup(void);
+int csmvga_setup(void);
 
 // bochsdisplay.c
 int bochs_display_setup(void);
