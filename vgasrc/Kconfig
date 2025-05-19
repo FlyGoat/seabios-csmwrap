@@ -57,7 +57,6 @@ menu "VGA ROM"
                 Build support for Geode LX vga.
 
         config VGA_COREBOOT
-            depends on COREBOOT
             bool "coreboot linear framebuffer"
             select VGA_EMULATE_TEXT
             help
