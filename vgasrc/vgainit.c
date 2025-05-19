@@ -14,6 +14,7 @@
 #include "std/optionrom.h" // struct pci_data
 #include "std/pmm.h" // struct pmmheader
 #include "string.h" // checksum_far
+#include "util.h" // coreboot_debug_preinit
 #include "vgabios.h" // SET_VGA
 #include "vgahw.h" // vgahw_setup
 #include "vgautil.h" // swcursor_check_event
@@ -157,6 +158,7 @@ void VISIBLE16
 vga_post(struct bregs *regs)
 {
     serial_debug_preinit();
+    coreboot_debug_preinit();
     dprintf(1, "Start SeaVGABIOS (version %s)\n", VERSION);
     dprintf(1, "VGABUILD: %s\n", BUILDINFO);
     debug_enter(regs, DEBUG_VGA_POST);
