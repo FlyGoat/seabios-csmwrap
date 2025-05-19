@@ -162,6 +162,11 @@ handle_csm_0002(struct bregs *regs)
         dprintf(3, "CSM PIRQ table at %p\n", PirAddr);
     }
 
+    // For PCI Access
+    if (csm_compat_table.PciExpressBase) {
+        pci_enable_mmconfig(csm_compat_table.PciExpressBase, "CSM");
+    }
+
     // For find_resume_vector()... and find_acpi_features()
     if (csm_rsdp.signature == RSDP_SIGNATURE) {
         RsdpAddr = &csm_rsdp;
