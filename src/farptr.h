@@ -205,4 +205,21 @@ static inline void *SEGOFF_TO_FLATPTR(struct segoff_s so) {
     return MAKE_FLATPTR(so.seg, so.offset);
 }
 
+static inline int flatptr_ok(void) {
+    /* 32bit segmented mode */
+    if (MODE16 == 0 && MODESEGMENT == 1)
+        return 0;
+
+    /* 32bit flat mode */
+    if (MODE16 == 0 && MODESEGMENT == 0)
+        return 1;
+
+    /* 16bit protected mode */
+    if (MODE16 == 1 && (cr0_read() & CR0_PE))
+        return 0;
+
+    /* 16bit real mode */
+    return 1;
+}
+
 #endif // farptr.h
