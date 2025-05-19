@@ -94,12 +94,12 @@ ipchksum(char *buf, int count)
     u16 *p = (u16*)buf;
     u32 sum = 0;
     while (count > 1) {
-        sum += GET_FARVAR(0, *p);
+        sum += GET_FLATPTR(*p);
         p++;
         count -= 2;
     }
     if (count)
-        sum += GET_FARVAR(0, *(u8*)p);
+        sum += GET_FLATPTR(*(u8*)p);
     sum = (sum >> 16) + (sum & 0xffff);
     sum += (sum >> 16);
     return ~sum;
@@ -112,15 +112,15 @@ find_cb_header(u32 addr, int len)
     u32 end = addr + len;
     for (; addr < end; addr += 16) {
         struct cb_header *cbh = (void*)addr;
-        if (GET_FARVAR(0, cbh->signature) != CB_SIGNATURE)
+        if (GET_FLATPTR(cbh->signature) != CB_SIGNATURE)
             continue;
-        u32 tsize = GET_FARVAR(0, cbh->table_bytes);
+        u32 tsize = GET_FLATPTR(cbh->table_bytes);
         if (! tsize)
             continue;
         if (ipchksum((void*)addr, sizeof(*cbh)) != 0)
             continue;
         if (ipchksum((void*)addr + sizeof(*cbh), tsize)
-            != GET_FARVAR(0, cbh->table_checksum))
+            != GET_FLATPTR(cbh->table_checksum))
             continue;
         return cbh;
     }
@@ -132,12 +132,12 @@ void *
 find_cb_subtable(struct cb_header *cbh, u32 tag)
 {
     char *tbl = (char *)cbh + sizeof(*cbh);
-    u32 count = GET_FARVAR(0, cbh->table_entries);
+    u32 count = GET_FLATPTR(cbh->table_entries);
     int i;
     for (i=0; i<count; i++) {
         struct cb_memory *cbm = (void*)tbl;
-        tbl += GET_FARVAR(0, cbm->size);
-        if (GET_FARVAR(0, cbm->tag) == tag)
+        tbl += GET_FLATPTR(cbm->size);
+        if (GET_FLATPTR(cbm->tag) == tag)
             return cbm;
     }
     return NULL;
@@ -152,7 +152,7 @@ find_cb_table(void)
     struct cb_forward *cbf = find_cb_subtable(cbh, CB_TAG_FORWARD);
     if (cbf) {
         dprintf(3, "Found coreboot table forwarder.\n");
-        cbh = find_cb_header(GET_FARVAR(0, cbf->forward), 0x100);
+        cbh = find_cb_header(GET_FLATPTR(cbf->forward), 0x100);
         if (!cbh)
             return NULL;
     }
@@ -162,10 +162,37 @@ find_cb_table(void)
 static struct cb_memory *CBMemTable;
 const char *CBvendor = "", *CBpart = "";
 
+void
+coreboot_debug_preinit(void)
+{
+    if (!CONFIG_DEBUG_COREBOOT)
+        return;
+
+    if (!flatptr_ok())
+        return;
+
+    // Check for coreboot debug console.
+    struct cb_header *cbh = find_cb_table();
+    if (!cbh)
+        return;
+    struct cb_cbmem_ref *cbref = find_cb_subtable(cbh, CB_TAG_CBMEM_CONSOLE);
+    if (cbref) {
+        u64 cbmem_addr = GET_FLATPTR(cbref->cbmem_addr);
+
+        if (cbmem_addr > 0xffffffff)
+            return; // Unable to access 64bit address.
+
+        cbcon = (void*)(u32)cbref->cbmem_addr;
+        dprintf(1, "Found coreboot cbmem console @ %llx\n", cbmem_addr);
+    }
+}
+
 // Populate max ram and e820 map info by scanning for a coreboot table.
 void
 coreboot_preinit(void)
 {
+    ASSERT32FLAT();
+
     if (!CONFIG_COREBOOT)
         return;
 
@@ -220,18 +247,28 @@ void coreboot_debug_putc(char c)
 {
     if (!CONFIG_DEBUG_COREBOOT)
         return;
-    if (!cbcon)
+
+    if (!flatptr_ok())
         return;
-    u32 cursor = cbcon->cursor & CBMC_CURSOR_MASK;
-    u32 flags = cbcon->cursor & ~CBMC_CURSOR_MASK;
-    if (cursor >= cbcon->size)
+
+    struct cbmem_console *con = GET_GLOBAL(cbcon);
+    if (!con)
+        return;
+
+    u32 cursor = GET_FLATPTR(con->cursor);
+    u32 flags = cursor & ~CBMC_CURSOR_MASK;
+    cursor &= CBMC_CURSOR_MASK;
+    u32 size = GET_FLATPTR(con->size);
+
+    if (cursor >= size)
         return; // Old coreboot version with legacy overflow mechanism.
-    cbcon->body[cursor++] = c;
-    if (cursor >= cbcon->size) {
+
+    SET_FLATPTR(con->body[cursor++], c);
+    if (cursor >= size) {
         cursor = 0;
         flags |= CBMC_OVERFLOW;
     }
-    cbcon->cursor = flags | cursor;
+    SET_FLATPTR(cbcon->cursor, flags | cursor);
 }
 
 /****************************************************************
