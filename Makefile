@@ -14,16 +14,12 @@ export KCONFIG_AUTOHEADER := autoconf.h
 export KCONFIG_CONFIG     := $(CURDIR)/.config
 export LC_ALL             := C
 
-CROSS_PREFIX              :=
+CROSS_PREFIX :=
 CC=$(CROSS_PREFIX)gcc
-AS=$(CROSS_PREFIX)as
-LD=$(CROSS_PREFIX)ld
 OBJCOPY=$(CROSS_PREFIX)objcopy
 OBJDUMP=$(CROSS_PREFIX)objdump
 STRIP=$(CROSS_PREFIX)strip
 PYTHON=python
-CPP=$(CROSS_PREFIX)cpp
-LD32BIT_FLAG:=-melf_i386
 
 # Source files
 SRCBOTH=misc.c stacks.c output.c string.c block.c cdrom.c disk.c	\
@@ -62,9 +58,10 @@ COMMONCFLAGS := -I$(OUT) -Isrc -Os -MD -g \
     -m32 -march=i386 -mregparm=3 -mpreferred-stack-boundary=2 \
     -minline-all-stringops -fomit-frame-pointer \
     -freg-struct-return -ffreestanding -fno-delete-null-pointer-checks \
-    -ffunction-sections -fdata-sections -fno-common -fno-merge-constants
-COMMONCFLAGS += $(call cc-option,$(CC),-nopie,)
+    -ffunction-sections -fdata-sections -fno-common -static -nostdlib \
+    -fno-merge-constants
 COMMONCFLAGS += $(call cc-option,$(CC),-fno-pie,)
+COMMONCFLAGS += $(call cc-option,$(CC),-nopie,)
 COMMONCFLAGS += $(call cc-option,$(CC),-fno-stack-protector,)
 COMMONCFLAGS += $(call cc-option,$(CC),-fno-stack-protector-all,)
 COMMONCFLAGS += $(call cc-option,$(CC),-fstack-check=no,)
@@ -81,6 +78,7 @@ CFLAGS32SEG := $(CFLAGSSEG) -DMODE16=0
 CFLAGS16 := $(CFLAGSSEG) -DMODE16=1 \
     $(call cc-option,$(CC),-m16,-Wa$(COMMA)src/code16gcc.s) \
     $(call cc-option,$(CC),--param large-stack-frame=4,-fno-inline)
+LD32BIT_FLAG:= $(COMMONCFLAGS) -Wl,-melf_i386
 
 # Run with "make V=1" to see the actual compile commands
 ifdef V
@@ -109,7 +107,8 @@ all: $(target-y)
 ################ Common build rules
 
 # Verify the build environment works.
-TESTGCC:=$(shell OUT="$(OUT)" CC="$(CC)" LD="$(LD)" scripts/test-build.sh)
+TESTGCC:=$(shell OUT="$(OUT)" CC="$(CC)" CFLAGS16="$(CFLAGS16)" \
+           LD32BIT_FLAG="$(LD32BIT_FLAG)" scripts/test-build.sh)
 ifeq "$(TESTGCC)" "-1"
 $(error "Please upgrade the build environment")
 endif
@@ -141,8 +140,7 @@ $(OUT)%.o: %.c $(OUT)autoconf.h
 
 $(OUT)%.lds: %.lds.S
 	@echo "  Precompiling $@"
-	$(Q)$(CPP) $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
-
+	$(Q)$(CC) -E $(COMMONCFLAGS) $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
 
 ################ Main BIOS build rules
 
@@ -164,10 +162,10 @@ $(OUT)romlayout.o: src/romlayout.S $(OUT)autoconf.h $(OUT)asm-offsets.h
 
 $(OUT)romlayout16.lds: $(OUT)ccode32flat.o $(OUT)code32seg.o $(OUT)ccode16.o $(OUT)romlayout.o src/version.c scripts/layoutrom.py scripts/buildversion.py
 	@echo "  Building ld scripts"
-	$(Q)$(PYTHON) ./scripts/buildversion.py -e "$(EXTRAVERSION)" -t "$(CC);$(AS);$(LD);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)autoversion.h
+	$(Q)$(PYTHON) ./scripts/buildversion.py -e "$(EXTRAVERSION)" -t "$(CC);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)autoversion.h
 	$(Q)$(CC) $(CFLAGS32FLAT) -c src/version.c -o $(OUT)version.o
-	$(Q)$(LD) $(LD32BIT_FLAG) -r $(OUT)ccode32flat.o $(OUT)version.o -o $(OUT)code32flat.o
-	$(Q)$(LD) $(LD32BIT_FLAG) -r $(OUT)ccode16.o $(OUT)romlayout.o -o $(OUT)code16.o
+	$(Q)$(CC) $(LD32BIT_FLAG) -r $(OUT)ccode32flat.o $(OUT)version.o -o $(OUT)code32flat.o
+	$(Q)$(CC) $(LD32BIT_FLAG) -r $(OUT)ccode16.o $(OUT)romlayout.o -o $(OUT)code16.o
 	$(Q)$(OBJDUMP) -thr $(OUT)code32flat.o > $(OUT)code32flat.o.objdump
 	$(Q)$(OBJDUMP) -thr $(OUT)code32seg.o > $(OUT)code32seg.o.objdump
 	$(Q)$(OBJDUMP) -thr $(OUT)code16.o > $(OUT)code16.o.objdump
@@ -179,15 +177,15 @@ $(OUT)romlayout32seg.lds $(OUT)romlayout32flat.lds $(OUT)code32flat.o $(OUT)code
 
 $(OUT)rom16.o: $(OUT)code16.o $(OUT)romlayout16.lds
 	@echo "  Linking $@"
-	$(Q)$(LD) -T $(OUT)romlayout16.lds $< -o $@
+	$(Q)$(CC) $(COMMONCFLAGS) -T $(OUT)romlayout16.lds $< -o $@
 
 $(OUT)rom32seg.o: $(OUT)code32seg.o $(OUT)romlayout32seg.lds
 	@echo "  Linking $@"
-	$(Q)$(LD) -T $(OUT)romlayout32seg.lds $< -o $@
+	$(Q)$(CC) $(COMMONCFLAGS) -T $(OUT)romlayout32seg.lds $< -o $@
 
 $(OUT)rom.o: $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o $(OUT)romlayout32flat.lds
 	@echo "  Linking $@"
-	$(Q)$(LD) -N -T $(OUT)romlayout32flat.lds $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o -o $@
+	$(Q)$(CC) $(COMMONCFLAGS) -Wl,-N -T $(OUT)romlayout32flat.lds $(OUT)rom16.noexec.o $(OUT)rom32seg.noexec.o $(OUT)code32flat.o -o $@
 
 $(OUT)bios.bin.prep: $(OUT)rom.o scripts/checkrom.py
 	@echo "  Prepping $@"
@@ -225,7 +223,7 @@ $(OUT)vgaccode16.raw.s: $(OUT)autoconf.h $(patsubst %.c, $(OUT)%.o,$(SRCVGA)) ; 
 $(OUT)vgaccode16.o: $(OUT)vgaccode16.raw.s scripts/vgafixup.py
 	@echo "  Fixup VGA rom assembler"
 	$(Q)$(PYTHON) ./scripts/vgafixup.py $< $(OUT)vgaccode16.s
-	$(Q)$(AS) --32 src/code16gcc.s $(OUT)vgaccode16.s -o $@
+	$(Q)$(CC) -c $(CFLAGS16) $(OUT)vgaccode16.s -o $@
 else
 $(OUT)vgaccode16.o: $(OUT)autoconf.h $(patsubst %.c, $(OUT)%.o,$(SRCVGA)) ; $(call whole-compile, $(CFLAGS16) -Isrc, $(SRCVGA),$@)
 endif
@@ -238,7 +236,7 @@ $(OUT)vgarom.o: $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgasrc/vgalayout.lds v
 	@echo "  Linking $@"
 	$(Q)$(PYTHON) ./scripts/buildversion.py -e "$(EXTRAVERSION)" -t "$(CC);$(AS);$(LD);$(OBJCOPY);$(OBJDUMP);$(STRIP)" $(OUT)autovgaversion.h
 	$(Q)$(CC) $(CFLAGS16) -c vgasrc/vgaversion.c -o $(OUT)vgaversion.o
-	$(Q)$(LD) --gc-sections -T $(OUT)vgasrc/vgalayout.lds $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgaversion.o -o $@
+	$(Q)$(CC) $(COMMONCFLAGS) -Wl,--gc-sections -T $(OUT)vgasrc/vgalayout.lds $(OUT)vgaccode16.o $(OUT)vgaentry.o $(OUT)vgaversion.o -o $@
 
 $(OUT)vgabios.bin.raw: $(OUT)vgarom.o
 	@echo "  Extracting binary $@"
