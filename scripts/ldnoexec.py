@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Script to remove EXEC flag from an ELF file
 #
 # Copyright (C) 2020  Kevin O'Connor <kevin@koconnor.net>
