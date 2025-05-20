@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Script to report the checksum of a file.
 #
 # Copyright (C) 2009  Kevin O'Connor <kevin@koconnor.net>
