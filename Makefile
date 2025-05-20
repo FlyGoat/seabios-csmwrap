@@ -23,7 +23,6 @@ OBJDUMP=$(CROSS_PREFIX)objdump
 STRIP=$(CROSS_PREFIX)strip
 PYTHON=python
 CPP=$(CROSS_PREFIX)cpp
-IASL:=iasl
 LD32BIT_FLAG:=-melf_i386
 
 # Source files
@@ -110,7 +109,7 @@ all: $(target-y)
 ################ Common build rules
 
 # Verify the build environment works.
-TESTGCC:=$(shell OUT="$(OUT)" CC="$(CC)" LD="$(LD)" IASL="$(IASL)" scripts/test-build.sh)
+TESTGCC:=$(shell OUT="$(OUT)" CC="$(CC)" LD="$(LD)" scripts/test-build.sh)
 ifeq "$(TESTGCC)" "-1"
 $(error "Please upgrade the build environment")
 endif
