@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Script to analyze code and arrange ld sections.
 #
 # Copyright (C) 2008-2014  Kevin O'Connor <kevin@koconnor.net>

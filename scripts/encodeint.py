@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Encode an integer in little endian format in a file.
 #
 # Copyright (C) 2011  Kevin O'Connor <kevin@koconnor.net>
