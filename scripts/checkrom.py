@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Script to check a bios image and report info on it.
 #
 # Copyright (C) 2008  Kevin O'Connor <kevin@koconnor.net>

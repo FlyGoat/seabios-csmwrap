@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Work around x86emu bugs by replacing problematic instructions.
 #
 # Copyright (C) 2012  Kevin O'Connor <kevin@koconnor.net>

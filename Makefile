@@ -23,7 +23,7 @@ CC=$(CROSS_PREFIX)gcc
 OBJCOPY=$(CROSS_PREFIX)objcopy
 OBJDUMP=$(CROSS_PREFIX)objdump
 STRIP=$(CROSS_PREFIX)strip
-PYTHON=python
+PYTHON=python3
 
 # Source files
 SRCBOTH=misc.c stacks.c output.c string.c block.c cdrom.c disk.c	\
