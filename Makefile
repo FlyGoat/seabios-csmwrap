@@ -9,12 +9,16 @@ OUT=out/
 
 # Common command definitions
 export HOSTCC             := cc
+export HOSTCLFLAGS        :=
+export HOSTLDFLAGS        :=
 export CONFIG_SHELL       := sh
 export KCONFIG_AUTOHEADER := autoconf.h
 export KCONFIG_CONFIG     := $(CURDIR)/.config
+export KBUILD_DEFCONFIG   := /dev/null
 export LC_ALL             := C
 
-CROSS_PREFIX :=
+CROSS_COMPILE :=
+CROSS_PREFIX := $(CROSS_COMPILE)
 CC=$(CROSS_PREFIX)gcc
 OBJCOPY=$(CROSS_PREFIX)objcopy
 OBJDUMP=$(CROSS_PREFIX)objdump
