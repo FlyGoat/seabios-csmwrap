@@ -8,15 +8,14 @@
 OUT=out/
 
 # Common command definitions
-export HOSTCC             := $(CC)
+export HOSTCC             := cc
 export CONFIG_SHELL       := sh
 export KCONFIG_AUTOHEADER := autoconf.h
 export KCONFIG_CONFIG     := $(CURDIR)/.config
 export LC_ALL             := C
-CROSS_PREFIX=
-ifneq ($(CROSS_PREFIX),)
+
+CROSS_PREFIX              :=
 CC=$(CROSS_PREFIX)gcc
-endif
 AS=$(CROSS_PREFIX)as
 LD=$(CROSS_PREFIX)ld
 OBJCOPY=$(CROSS_PREFIX)objcopy
