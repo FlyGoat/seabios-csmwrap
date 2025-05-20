@@ -11,6 +11,10 @@ else
 Kconfig := Kconfig
 endif
 
+ifndef KBUILD_DEFCONFIG
+KBUILD_DEFCONFIG := defconfig
+endif
+
 # We need this, in case the user has it in its environment
 unexport CONFIG_
 
@@ -96,7 +100,7 @@ savedefconfig: $(obj)/conf
 
 defconfig: $(obj)/conf
 	@echo "  Build default config"
-	$(Q)$< --defconfig=/dev/null $(Kconfig)
+	$(Q)$< --defconfig=$(KBUILD_DEFCONFIG) $(Kconfig)
 
 %_defconfig: $(obj)/conf
 	$(Q)$< --defconfig=arch/$(SRCARCH)/configs/$@ $(Kconfig)
