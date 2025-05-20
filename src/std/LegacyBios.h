@@ -285,7 +285,7 @@ typedef enum {
   /// code is read/write.
   /// Input:
   ///   AX = Compatibility16PrepareToBoot
-  ///   ES:BX = Pointer to EFI_TO_COMPATIBILITY16_BOOT_TABLE structure  
+  ///   ES:BX = Pointer to EFI_TO_COMPATIBILITY16_BOOT_TABLE structure
   /// Return:
   ///   AX = Returned status codes
   ///
@@ -981,5 +981,7 @@ typedef struct {
   UINT16                            SecondaryBase;      ///< The secondary device I/O base.
   UINT16                            SecondaryBusMaster; ///< The secondary device bus master I/O base.
 } EFI_LEGACY_INSTALL_PCI_HANDLER;
+
+#pragma pack()
 
 #endif
