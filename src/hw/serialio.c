@@ -39,6 +39,7 @@ serial_debug_read(u8 offset)
         ASSERT32FLAT();
         return readb((void*)CONFIG_DEBUG_SERIAL_MEM_ADDRESS + 4*offset);
     }
+    return 0;
 }
 
 // Setup the debug serial port for output.
