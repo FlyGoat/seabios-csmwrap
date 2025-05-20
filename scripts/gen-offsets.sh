@@ -9,9 +9,10 @@ cat > "$OUTFILE" <<EOF
 #ifndef __ASM_OFFSETS_H
 #define __ASM_OFFSETS_H
 EOF
-sed -ne "/^->/{s:->#\(.*\):/* \1 */:; \
-        s:^->\([^ ]*\) [\$\#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:; \
-        s:->::; p;}" < "$INFILE" >> "$OUTFILE"
+sed -ne 's:^[[:space:]]*\.ascii[[:space:]]*"\(.*\)".*:\1:;
+	/^->/{s:->#\(.*\):/* \1 */:;
+	s:^->\([^ ]*\) [\$$#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:;
+	s:->::; p;}' < "$INFILE" >> "$OUTFILE"
 cat >> "$OUTFILE" <<EOF
 #endif // asm-offsets.h
 EOF
