@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # Fill in checksum/size of an option rom, and pad it to proper length.
 #
 # Copyright (C) 2009  Kevin O'Connor <kevin@koconnor.net>
