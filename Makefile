@@ -56,7 +56,7 @@ EXTRAVERSION=
 
 CPPFLAGS = -P -MD -MT $@
 
-COMMONCFLAGS := -I$(OUT) -Isrc -Os -MD -g \
+COMMONCFLAGS := -I$(OUT) -Isrc -Os -MD -g -std=gnu11 \
     -Wall -Wno-strict-aliasing -Wold-style-definition \
     $(call cc-option,$(CC),-Wtype-limits,) \
     -m32 -march=i386 -mregparm=3 -mpreferred-stack-boundary=2 \
