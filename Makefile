@@ -226,6 +226,8 @@ $(OUT)vgaccode16.raw.s: $(OUT)autoconf.h $(patsubst %.c, $(OUT)%.o,$(SRCVGA)) ; 
 $(OUT)vgaccode16.o: $(OUT)vgaccode16.raw.s scripts/vgafixup.py
 	@echo "  Fixup VGA rom assembler"
 	$(Q)$(PYTHON) ./scripts/vgafixup.py $< $(OUT)vgaccode16.s
+	sed "s/\.file	/.file $$(grep '\.file [0-9]*' $(OUT)vgaccode16.s | awk '{print $$2 + 1}' | sort -n | tail -n 1) /g" $(OUT)vgaccode16.s > $(OUT)vgaccode16.s.sed
+	mv $(OUT)vgaccode16.s.sed $(OUT)vgaccode16.s
 	$(Q)$(CC) -c $(CFLAGS16) $(OUT)vgaccode16.s -o $@
 else
 $(OUT)vgaccode16.o: $(OUT)autoconf.h $(patsubst %.c, $(OUT)%.o,$(SRCVGA)) ; $(call whole-compile, $(CFLAGS16) -Isrc, $(SRCVGA),$@)
