@@ -143,7 +143,7 @@ $(OUT)%.o: %.c $(OUT)autoconf.h
 
 $(OUT)%.lds: %.lds.S
 	@echo "  Precompiling $@"
-	$(Q)$(CC) -E $(COMMONCFLAGS) $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
+	$(Q)$(CC) -x c -E -P -undef $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
 
 ################ Main BIOS build rules
 
