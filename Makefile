@@ -23,7 +23,6 @@ OBJCOPY=$(CROSS_PREFIX)objcopy
 OBJDUMP=$(CROSS_PREFIX)objdump
 STRIP=$(CROSS_PREFIX)strip
 PYTHON=python3
-CPP=cpp
 IASL:=iasl
 LD32BIT_FLAG:=-melf_i386
 
@@ -143,7 +142,7 @@ $(OUT)%.o: %.c $(OUT)autoconf.h
 
 $(OUT)%.lds: %.lds.S
 	@echo "  Precompiling $@"
-	$(Q)$(CPP) $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
+	$(Q)$(CC) -x c -E -P -undef $(CPPFLAGS) -D__ASSEMBLY__ $< -o $@
 
 
 ################ Main BIOS build rules
