@@ -15,6 +15,7 @@
 #include "memmap.h" // SYMBOL
 #include "output.h" // dprintf
 #include "paravirt.h" // qemu_preinit
+#include "romfile.h" // const_romfile_add_int
 #include "stacks.h" // wait_threads
 #include "std/acpi.h" // RSDP_SIGNATURE
 #include "std/bda.h" // struct bios_data_area_s
@@ -63,6 +64,7 @@ static void
 csm_maininit(struct bregs *regs)
 {
     interface_init();
+    const_romfile_add_int("etc/extra-pci-roots", 1);
     pci_probe_devices();
 
     csm_compat_table.PnPInstallationCheckSegment = SEG_BIOS;
