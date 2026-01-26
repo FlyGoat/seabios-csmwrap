@@ -312,7 +312,7 @@ static int wait_bit(u32 *reg, u32 mask, int value, u32 timeout)
  * Root hub
  ****************************************************************/
 
-#define XHCI_TIME_POSTPOWER 20
+#define XHCI_TIME_POSTPOWER 100
 
 // Check if device attached to port
 static void
