@@ -50,6 +50,7 @@ void finish_preempt(void);
 int wait_preempt(void);
 void check_preempt(void);
 u32 __call32_params(void *func, u32 eax, u32 edx, u32 ecx, u32 errret);
+void init_bios_proxy_addr(void);
 #define call32_params(func, eax, edx, ecx, errret) ({                   \
         extern void _cfunc32flat_ ##func (void);                        \
         __call32_params( _cfunc32flat_ ##func , (u32)(eax), (u32)(edx)  \

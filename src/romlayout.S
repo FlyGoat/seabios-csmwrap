@@ -414,6 +414,158 @@ __csm_return:
         popfw
         lretw
 
+/****************************************************************
+ * Helper core for V86 mode BIOS proxy
+ *
+ * This code runs on a dedicated CPU core to handle BIOS calls when the
+ * main core is running in V86 mode (under EMM386). The helper stays in
+ * 32-bit protected mode and can execute call32 normally.
+ *
+ * The CSMWrap trampoline at 0x7000 does minimal 16-bit setup and
+ * far jumps here. This code handles GDT load and 32-bit mode switch.
+ *
+ * NOTE: This code is placed within the entry_csm section (after lretw)
+ * so it won't be garbage collected by the linker.
+ ****************************************************************/
+
+        // Signature for CSMWrap to find the 16-bit entry point
+        .global bios_proxy_helper_16_signature
+bios_proxy_helper_16_signature:
+        .ascii "PRXY16EP"
+
+        .global bios_proxy_helper_16_entry
+bios_proxy_helper_16_entry:
+        // 16-bit entry point - called from CSMWrap trampoline via far jump
+        // Expects: EBX = mailbox linear address, ESI = helper_ready flag address
+        //          ESP = stack top (all 32-bit values set by trampoline)
+        // We are in 16-bit real mode with CS = 0xF000
+
+        // Clear CR4 completely - disable ALL features (SMEP, SMAP, CET, PAE, etc.)
+        xorl %eax, %eax
+        movl %eax, %cr4
+
+        // Load SeaBIOS GDT
+        lgdtw %cs:rombios32_gdt_48
+
+        // Enable protected mode: CR0 = PE | ET (0x11)
+        // Clear everything else (paging, cache disable, etc.)
+        movl $0x11, %eax
+        movl %eax, %cr0
+
+        // Far jump to 32-bit code - required immediately after setting CR0.PE
+        ljmpl $SEG32_MODE32_CS, $(.Lhelper_32bit + BUILD_BIOS_ADDR)
+
+        .code32
+.Lhelper_32bit:
+        // Now in 32-bit protected mode
+        // Reload data segment registers with SeaBIOS selectors
+        movl $SEG32_MODE32_DS, %eax
+        movw %ax, %ds
+        movw %ax, %es
+        movw %ax, %ss
+        movw %ax, %fs
+        movw %ax, %gs
+
+        // Clear LDT
+        xorl %eax, %eax
+        lldt %ax
+
+        // EBX = mailbox address, ESI = helper_ready address (from trampoline)
+        movl %ebx, %ebp             // EBP = mailbox address (use as base register)
+
+        // Clear request_pending before entering loop
+        movl $0, 8(%ebp)
+
+        // Write our APIC ID to helper_core_id (offset 32) so yield() can detect us.
+        // This avoids cache coherency issues from cross-core writes.
+        // Check if x2APIC mode is enabled (bit 10 of IA32_APIC_BASE MSR)
+        movl $0x1B, %ecx
+        rdmsr                       // Result in EDX:EAX
+        testl $(1 << 10), %eax      // Test EXTD bit (x2APIC mode)
+        jz .Lread_apic_id_xapic
+
+        // x2APIC mode: read APIC ID from MSR 0x802
+        movl $0x802, %ecx
+        rdmsr                       // APIC ID in EAX (full 32-bit value)
+        jmp .Lstore_apic_id
+
+.Lread_apic_id_xapic:
+        // xAPIC mode: read APIC ID from MMIO
+        andl $0xFFFFF000, %eax      // Mask to get base address (bits 12-31)
+        movl 0x20(%eax), %eax       // Read LAPIC ID register (base + 0x20)
+        shrl $24, %eax              // Shift to get APIC ID in bits 0-7
+
+.Lstore_apic_id:
+        movl %eax, 32(%ebp)         // Write to helper_core_id
+
+        // Signal that helper is ready
+        movl $1, (%esi)
+
+        // Check if MONITOR/MWAIT is supported (CPUID.01H:ECX.MONITOR[bit 3])
+        // Use ESI as flag: 1 = use mwait, 0 = use pause
+        movl $1, %eax
+        cpuid
+        xorl %esi, %esi                 // Default: no mwait
+        testl $(1 << 3), %ecx
+        jz .Lhelper_poll_loop
+        movl $1, %esi                   // mwait supported
+
+.Lhelper_poll_loop:
+        cmpl $0, 8(%ebp)
+        jne .Lhelper_handle_request
+
+        // Check if we should use mwait or pause
+        testl %esi, %esi
+        jz .Lhelper_do_pause
+
+        // MONITOR/MWAIT path
+        leal 8(%ebp), %eax              // EAX = address to monitor
+        xorl %ecx, %ecx                 // ECX = extensions (0)
+        xorl %edx, %edx                 // EDX = hints (0)
+        monitor
+
+        // Check again after arming monitor (avoid race condition)
+        cmpl $0, 8(%ebp)
+        jne .Lhelper_handle_request
+
+        // Wait for write to monitored address
+        xorl %eax, %eax                 // EAX = hints (0 = C1 state)
+        xorl %ecx, %ecx                 // ECX = extensions (0)
+        mwait
+        jmp .Lhelper_poll_loop
+
+.Lhelper_do_pause:
+        pause
+        jmp .Lhelper_poll_loop
+
+.Lhelper_handle_request:
+        // Mailbox layout:
+        //   0: signature (8 bytes)
+        //   8: request_pending (4 bytes)
+        //  12: func_ptr (4 bytes)
+        //  16: arg_eax (4 bytes)
+        //  20: arg_edx (4 bytes)
+        //  24: arg_ecx (4 bytes)
+        //  28: result (4 bytes)
+        //  32: helper_core_id (4 bytes) - DO NOT OVERWRITE
+
+        // Load function pointer and args (regparm=3: EAX, EDX, ECX)
+        movl 12(%ebp), %edi
+        movl 24(%ebp), %ecx
+        movl 20(%ebp), %edx
+        movl 16(%ebp), %eax
+
+        // Call the function (ESI is callee-saved, so mwait flag preserved)
+        calll *%edi
+
+        // Store result and signal completion
+        movl %eax, 28(%ebp)
+        movl $0, 8(%ebp)
+
+        jmp .Lhelper_poll_loop
+
+        .code16
+
 // Serial console "hooked vga" entry point
         DECLFUNC entry_sercon
 entry_sercon:

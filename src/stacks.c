@@ -6,6 +6,7 @@
 
 #include "biosvar.h" // GET_GLOBAL
 #include "bregs.h" // CR0_PE
+#include "x86.h" // cr0_read
 #include "fw/paravirt.h" // PORT_SMI_CMD
 #include "hw/rtc.h" // rtc_use
 #include "list.h" // hlist_node
@@ -17,6 +18,44 @@
 #include "util.h" // useRTC
 
 #define MAIN_STACK_MAX (1024*1024)
+
+
+/****************************************************************
+ * BIOS Proxy for V86 mode support
+ *
+ * When DOS runs under EMM386, BIOS handlers execute in V86 mode and cannot
+ * switch to protected mode (call32 fails). We use a helper CPU core that
+ * stays in real mode to execute BIOS calls on behalf of the V86-mode core.
+ *
+ * The helper core uses MONITOR/MWAIT on the request_pending field for
+ * efficient low-latency wake-up.
+ ****************************************************************/
+
+/* Unique signature for CSMWrap to locate this structure: "CSMPrxy\0" */
+#define BIOS_PROXY_SIGNATURE 0x7978725050534D43ULL  /* "CSMPPrxy" little-endian */
+
+/* Stack is now allocated by CSMWrap and passed via trampoline */
+
+struct bios_proxy_mailbox {
+    u64 signature;              /* BIOS_PROXY_SIGNATURE - must be first */
+    volatile u32 request_pending; /* Non-zero when request waiting, cleared by helper when done */
+    u32 func_ptr;               /* 32-bit flat function pointer to call */
+    u32 arg_eax;                /* Argument passed in EAX */
+    u32 arg_edx;                /* Argument passed in EDX */
+    u32 arg_ecx;                /* Argument passed in ECX */
+    u32 result;                 /* Return value from function */
+    u32 helper_core_id;         /* APIC ID of helper core (set by CSMWrap) */
+    /* Stack is allocated separately by CSMWrap, not embedded here */
+};
+
+/*
+ * Mailbox in F-segment (ROM area) so it stays at a fixed offset in the binary.
+ * CSMWrap finds this by scanning for the signature and calculates the runtime address.
+ * Using VARFSEG (not VARLOW) keeps it in ROM instead of relocating to conventional memory.
+ */
+struct bios_proxy_mailbox bios_proxy VARFSEG = {
+    .signature = BIOS_PROXY_SIGNATURE,
+};
 
 
 /****************************************************************
@@ -36,6 +75,26 @@ struct {
 #define C16_SMM 2
 
 int HaveSmmCall32 VARFSEG;
+
+/*
+ * Get current CPU's APIC ID.
+ * Checks IA32_APIC_BASE MSR to determine if x2APIC mode is enabled.
+ * - x2APIC mode (bit 10 set): read from MSR 0x802, full 32-bit ID
+ * - xAPIC mode: read from MMIO at LAPIC base + 0x20, ID in bits 24-31
+ */
+static inline u32 get_current_apic_id(void)
+{
+    u64 apic_base_msr = rdmsr(0x1B);
+
+    if (apic_base_msr & (1 << 10)) {
+        /* x2APIC mode: read from MSR 0x802 */
+        return (u32)rdmsr(0x802);
+    } else {
+        /* xAPIC mode: read from MMIO */
+        u32 lapic_base = (u32)(apic_base_msr & 0xFFFFF000);
+        return readl((void*)(lapic_base + 0x20)) >> 24;
+    }
+}
 
 // Backup state in preparation for call32
 static int
@@ -234,6 +293,108 @@ call16_smm(u32 eax, u32 edx, void *func)
     return eax;
 }
 
+/*
+ * Internal helper to send a request to the proxy helper core.
+ * Used by both __call32 and __call32_params.
+ *
+ * IMPORTANT: Access VARFSEG variables directly via GET_FLATPTR/SET_FLATPTR,
+ * do NOT create pointers to them. In 16-bit code, &bios_proxy gives the full
+ * link-time address (e.g. 0xF6D00), not an offset. Using MAKE_FLATPTR(SEG_BIOS, &bios_proxy)
+ * would incorrectly compute 0xF0000 + 0xF6D00 = 0x1E6D00 instead of 0xF6D00.
+ */
+/*
+ * Find the bios_proxy mailbox by scanning for its signature.
+ * This avoids VARLOW storage issues caused by SeaBIOS's forcedelta relocation.
+ *
+ * In 16-bit mode, we scan SEG_BIOS (F-segment) for the signature.
+ * Returns the linear address of the mailbox, or 0 if not found.
+ * The scan is fast (~4K iterations) so no caching needed.
+ */
+static u32
+find_bios_proxy(void)
+{
+    /* Scan F-segment for signature (scan every 16 bytes for alignment) */
+    u32 offset;
+
+    u32 expect_lo = (u32)BIOS_PROXY_SIGNATURE;
+    u32 expect_hi = (u32)(BIOS_PROXY_SIGNATURE >> 32);
+
+    for (offset = 0; offset < 0xFFF0; offset += 16) {
+        u32 sig_lo = GET_FARVAR(SEG_BIOS, *(u32 *)offset);
+        u32 sig_hi = GET_FARVAR(SEG_BIOS, *(u32 *)(offset + 4));
+
+        if (sig_lo == expect_lo && sig_hi == expect_hi) {
+            return (SEG_BIOS << 4) + offset;
+        }
+    }
+
+    return 0;
+}
+
+void
+init_bios_proxy_addr(void)
+{
+    ASSERT32FLAT();
+
+    /*
+     * In 32-bit flat mode, verify the mailbox exists and is accessible.
+     * This also forces the linker to include bios_proxy in the binary.
+     */
+    if (bios_proxy.signature != BIOS_PROXY_SIGNATURE)
+        return;
+}
+
+/*
+ * Helper macros to access mailbox fields.
+ * Use cached mailbox address (mb) instead of scanning every time.
+ * We use GET_FARVAR/SET_FARVAR with computed segment:offset from the linear address.
+ */
+#define GET_PROXY_AT(mb, field) ({                                              \
+    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
+    GET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
+               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr));         \
+})
+
+#define SET_PROXY_AT(mb, field, val) do {                                       \
+    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
+    SET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
+               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr), (val));  \
+} while (0)
+
+static u32
+call32_proxy(void *func, u32 eax, u32 edx, u32 ecx)
+{
+    /*
+     * Send request to helper core and wait for response.
+     * Helper is guaranteed to be ready - CSMWrap waits for it before booting SeaBIOS.
+     */
+    u32 mb = find_bios_proxy();
+    if (!mb)
+        return 0;
+
+    /* Set up the request */
+    SET_PROXY_AT(mb, func_ptr, (u32)func);
+    SET_PROXY_AT(mb, arg_eax, eax);
+    SET_PROXY_AT(mb, arg_edx, edx);
+    SET_PROXY_AT(mb, arg_ecx, ecx);
+
+    /* Memory barrier before signaling request */
+    asm volatile("mfence" ::: "memory");
+
+    /* Signal request */
+    SET_PROXY_AT(mb, request_pending, 1);
+
+    /* Memory barrier makes write visible to helper */
+    asm volatile("mfence" ::: "memory");
+
+    /* Wait for helper to complete (clears request_pending when done) */
+    while (GET_PROXY_AT(mb, request_pending)) {
+        asm volatile("pause" ::: "memory");
+    }
+
+    return GET_PROXY_AT(mb, result);
+}
+
 // Call a 32bit SeaBIOS function from a 16bit SeaBIOS function.
 u32 VISIBLE16
 __call32(void *func, u32 eax, u32 errret)
@@ -241,38 +402,8 @@ __call32(void *func, u32 eax, u32 errret)
     ASSERT16();
     if (CONFIG_CALL32_SMM && GET_GLOBAL(HaveSmmCall32))
         return call32_smm(func, eax);
-    // Jump direclty to 32bit mode - this clobbers the 16bit segment
-    // selector registers.
-    int ret = call32_prep(C16_BIG);
-    if (ret)
-        return errret;
-    u32 bkup_ss, bkup_esp;
-    asm volatile(
-        // Backup ss/esp / set esp to flat stack location
-        "  movl %%ss, %0\n"
-        "  movl %%esp, %1\n"
-        "  shll $4, %0\n"
-        "  addl %0, %%esp\n"
-        "  shrl $4, %0\n"
 
-        // Transition to 32bit mode, call func, return to 16bit
-        "  movl $(" __stringify(BUILD_BIOS_ADDR) " + 1f), %%edx\n"
-        "  jmp transition32_nmi_off\n"
-        ASM16_SWITCH32
-        "1:calll *%3\n"
-        "  movl $2f, %%edx\n"
-        "  jmp transition16big\n"
-
-        // Restore ds/ss/esp
-        ASM16_BACK16
-        "2:movl %0, %%ds\n"
-        "  movl %0, %%ss\n"
-        "  movl %1, %%esp\n"
-        : "=&r" (bkup_ss), "=&r" (bkup_esp), "+a" (eax)
-        : "r" (func)
-        : "ecx", "edx", "cc", "memory");
-    call32_post();
-    return eax;
+    return call32_proxy(func, eax, 0, 0);
 }
 
 // Call a 16bit SeaBIOS function, restoring the mode from last call32().
@@ -628,6 +759,16 @@ yield(void)
         check_irqs();
         return;
     }
+    // On helper core, don't try thread switching - the helper runs on a
+    // separate stack that isn't a valid thread_info structure.
+    // Check by comparing current APIC ID against the helper's stored ID.
+    volatile u32 *helper_id_ptr = (volatile u32 *)((u32)&bios_proxy + 32);
+    u32 helper_id = *helper_id_ptr;
+    u32 my_id = get_current_apic_id();
+    if (helper_id != 0 && my_id == helper_id) {
+        asm volatile("pause" : : : "memory");
+        return;
+    }
     struct thread_info *cur = getCurThread();
     // Switch to the next thread
     switch_next(cur);
@@ -754,6 +895,9 @@ check_preempt(void)
  * call32 helper
  ****************************************************************/
 
+/*
+ * Helper struct for SMM path (which can't use the proxy)
+ */
 struct call32_params_s {
     void *func;
     u32 eax, edx, ecx;
@@ -770,7 +914,13 @@ u32
 __call32_params(void *func, u32 eax, u32 edx, u32 ecx, u32 errret)
 {
     ASSERT16();
-    struct call32_params_s params = {func, eax, edx, ecx};
-    return call32(call32_params_helper, MAKE_FLATPTR(GET_SEG(SS), &params)
-                  , errret);
+    if (CONFIG_CALL32_SMM && GET_GLOBAL(HaveSmmCall32)) {
+        /* SMM path: use the old helper struct approach */
+        struct call32_params_s params = {func, eax, edx, ecx};
+        return call32_smm(call32_params_helper,
+                          (u32)MAKE_FLATPTR(GET_SEG(SS), &params));
+    }
+
+    /* Proxy path: pass args directly via mailbox */
+    return call32_proxy(func, eax, edx, ecx);
 }
