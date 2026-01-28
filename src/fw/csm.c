@@ -135,6 +135,7 @@ handle_csm_0001(struct bregs *regs)
     dprintf(3, "SmmTable %08x\n", csm_boot_table->SmmTable);
     dprintf(3, "OsMemoryAbove1Mb %08x\n", csm_boot_table->OsMemoryAbove1Mb);
     dprintf(3, "UnconventionalDeviceTable %08x\n", csm_boot_table->UnconventionalDeviceTable);
+    dprintf(3, "MpTable %08x\n", csm_boot_table->MpTable);
 
     regs->ax = 0;
 }
@@ -185,7 +186,9 @@ handle_csm_0002(struct bregs *regs)
     if (csm_boot_table->SmbiosTable)
         copy_smbios_21((void *)csm_boot_table->SmbiosTable);
 
-    // MPTABLE is just there; we don't care where.
+    // MP table needs to be copied into the f-seg (CSMWrap extension)
+    if (csm_boot_table->MpTable)
+        copy_mptable((void *)csm_boot_table->MpTable);
 
     // EFI may have reinitialised the video using its *own* driver.
     enable_vga_console();
