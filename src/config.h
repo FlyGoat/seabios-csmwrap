@@ -24,7 +24,7 @@
 // Number of bytes the smbios may be and still live in the f-segment
 #define BUILD_MAX_SMBIOS_FSEG     600
 // Maximum number of bytes the mptable may be and still be copied to f-segment
-#define BUILD_MAX_MPTABLE_FSEG    600
+#define BUILD_MAX_MPTABLE_FSEG    4096
 
 #define BUILD_MODEL_ID      0xFC
 #define BUILD_SUBMODEL_ID   0x00
