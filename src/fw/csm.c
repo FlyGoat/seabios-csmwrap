@@ -63,9 +63,6 @@ csm_return(struct bregs *regs)
 static void
 csm_maininit(struct bregs *regs)
 {
-    /* Initialize bios_proxy linear address for V86 mode support */
-    init_bios_proxy_addr();
-
     interface_init();
     const_romfile_add_int("etc/extra-pci-roots", 1);
     pci_probe_devices();

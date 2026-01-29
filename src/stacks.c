@@ -31,30 +31,22 @@
  * efficient low-latency wake-up.
  ****************************************************************/
 
-/* Unique signature for CSMWrap to locate this structure: "CSMPrxy\0" */
-#define BIOS_PROXY_SIGNATURE 0x7978725050534D43ULL  /* "CSMPPrxy" little-endian */
-
-/* Stack is now allocated by CSMWrap and passed via trampoline */
+/*
+ * Fixed mailbox address in EBDA (Extended BIOS Data Area).
+ * EBDA starts at 0x9F800 (2KB), SeaBIOS uses ~0x121 bytes at the start.
+ * Mailbox is placed at 0x9FF00, well clear of SeaBIOS's EBDA usage.
+ * This is normal RAM accessible by all CPU cores without MTRR configuration.
+ */
+#define BIOS_PROXY_MAILBOX_ADDR 0x9FF00
 
 struct bios_proxy_mailbox {
-    u64 signature;              /* BIOS_PROXY_SIGNATURE - must be first */
-    volatile u32 request_pending; /* Non-zero when request waiting, cleared by helper when done */
-    u32 func_ptr;               /* 32-bit flat function pointer to call */
-    u32 arg_eax;                /* Argument passed in EAX */
-    u32 arg_edx;                /* Argument passed in EDX */
-    u32 arg_ecx;                /* Argument passed in ECX */
-    u32 result;                 /* Return value from function */
-    u32 helper_core_id;         /* APIC ID of helper core (set by CSMWrap) */
-    /* Stack is allocated separately by CSMWrap, not embedded here */
-};
-
-/*
- * Mailbox in F-segment (ROM area) so it stays at a fixed offset in the binary.
- * CSMWrap finds this by scanning for the signature and calculates the runtime address.
- * Using VARFSEG (not VARLOW) keeps it in ROM instead of relocating to conventional memory.
- */
-struct bios_proxy_mailbox bios_proxy VARFSEG = {
-    .signature = BIOS_PROXY_SIGNATURE,
+    volatile u32 request_pending; /* offset 0: Non-zero when request waiting */
+    u32 func_ptr;               /* offset 4: 32-bit flat function pointer */
+    u32 arg_eax;                /* offset 8: Argument passed in EAX */
+    u32 arg_edx;                /* offset 12: Argument passed in EDX */
+    u32 arg_ecx;                /* offset 16: Argument passed in ECX */
+    u32 result;                 /* offset 20: Return value from function */
+    u32 helper_core_id;         /* offset 24: APIC ID of helper core */
 };
 
 
@@ -294,72 +286,19 @@ call16_smm(u32 eax, u32 edx, void *func)
 }
 
 /*
- * Internal helper to send a request to the proxy helper core.
- * Used by both __call32 and __call32_params.
- *
- * IMPORTANT: Access VARFSEG variables directly via GET_FLATPTR/SET_FLATPTR,
- * do NOT create pointers to them. In 16-bit code, &bios_proxy gives the full
- * link-time address (e.g. 0xF6D00), not an offset. Using MAKE_FLATPTR(SEG_BIOS, &bios_proxy)
- * would incorrectly compute 0xF0000 + 0xF6D00 = 0x1E6D00 instead of 0xF6D00.
+ * Mailbox segment for accessing EBDA mailbox from 16-bit code.
+ * Linear address 0x9FF00 = segment 0x9FF0, offset 0x0000
  */
-/*
- * Find the bios_proxy mailbox by scanning for its signature.
- * This avoids VARLOW storage issues caused by SeaBIOS's forcedelta relocation.
- *
- * In 16-bit mode, we scan SEG_BIOS (F-segment) for the signature.
- * Returns the linear address of the mailbox, or 0 if not found.
- * The scan is fast (~4K iterations) so no caching needed.
- */
-static u32
-find_bios_proxy(void)
-{
-    /* Scan F-segment for signature (scan every 16 bytes for alignment) */
-    u32 offset;
-
-    u32 expect_lo = (u32)BIOS_PROXY_SIGNATURE;
-    u32 expect_hi = (u32)(BIOS_PROXY_SIGNATURE >> 32);
-
-    for (offset = 0; offset < 0xFFF0; offset += 16) {
-        u32 sig_lo = GET_FARVAR(SEG_BIOS, *(u32 *)offset);
-        u32 sig_hi = GET_FARVAR(SEG_BIOS, *(u32 *)(offset + 4));
-
-        if (sig_lo == expect_lo && sig_hi == expect_hi) {
-            return (SEG_BIOS << 4) + offset;
-        }
-    }
-
-    return 0;
-}
-
-void
-init_bios_proxy_addr(void)
-{
-    ASSERT32FLAT();
-
-    /*
-     * In 32-bit flat mode, verify the mailbox exists and is accessible.
-     * This also forces the linker to include bios_proxy in the binary.
-     */
-    if (bios_proxy.signature != BIOS_PROXY_SIGNATURE)
-        return;
-}
+#define MBX_SEG 0x9FF0
 
 /*
- * Helper macros to access mailbox fields.
- * Use cached mailbox address (mb) instead of scanning every time.
- * We use GET_FARVAR/SET_FARVAR with computed segment:offset from the linear address.
+ * Access mailbox fields using segment:offset addressing.
+ * Similar to GET_BDA/SET_BDA macros but for our EBDA mailbox.
  */
-#define GET_PROXY_AT(mb, field) ({                                              \
-    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
-    GET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
-               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr));         \
-})
-
-#define SET_PROXY_AT(mb, field, val) do {                                       \
-    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
-    SET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
-               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr), (val));  \
-} while (0)
+#define GET_MBX(field) \
+    GET_FARVAR(MBX_SEG, ((struct bios_proxy_mailbox *)0)->field)
+#define SET_MBX(field, val) \
+    SET_FARVAR(MBX_SEG, ((struct bios_proxy_mailbox *)0)->field, (val))
 
 static u32
 call32_proxy(void *func, u32 eax, u32 edx, u32 ecx)
@@ -367,32 +306,27 @@ call32_proxy(void *func, u32 eax, u32 edx, u32 ecx)
     /*
      * Send request to helper core and wait for response.
      * Helper is guaranteed to be ready - CSMWrap waits for it before booting SeaBIOS.
+     * Mailbox is at fixed EBDA address, accessed via MBX_SEG segment.
      */
-    u32 mb = find_bios_proxy();
-    if (!mb)
-        return 0;
 
     /* Set up the request */
-    SET_PROXY_AT(mb, func_ptr, (u32)func);
-    SET_PROXY_AT(mb, arg_eax, eax);
-    SET_PROXY_AT(mb, arg_edx, edx);
-    SET_PROXY_AT(mb, arg_ecx, ecx);
+    SET_MBX(func_ptr, (u32)func);
+    SET_MBX(arg_eax, eax);
+    SET_MBX(arg_edx, edx);
+    SET_MBX(arg_ecx, ecx);
 
-    /* Memory barrier before signaling request */
-    asm volatile("mfence" ::: "memory");
+    /* Compiler barrier before signaling request */
+    asm volatile("" ::: "memory");
 
     /* Signal request */
-    SET_PROXY_AT(mb, request_pending, 1);
-
-    /* Memory barrier makes write visible to helper */
-    asm volatile("mfence" ::: "memory");
+    SET_MBX(request_pending, 1);
 
     /* Wait for helper to complete (clears request_pending when done) */
-    while (GET_PROXY_AT(mb, request_pending)) {
+    while (GET_MBX(request_pending)) {
         asm volatile("pause" ::: "memory");
     }
 
-    return GET_PROXY_AT(mb, result);
+    return GET_MBX(result);
 }
 
 // Call a 32bit SeaBIOS function from a 16bit SeaBIOS function.
@@ -762,7 +696,9 @@ yield(void)
     // On helper core, don't try thread switching - the helper runs on a
     // separate stack that isn't a valid thread_info structure.
     // Check by comparing current APIC ID against the helper's stored ID.
-    volatile u32 *helper_id_ptr = (volatile u32 *)((u32)&bios_proxy + 32);
+    // Mailbox is at fixed EBDA address.
+    volatile u32 *helper_id_ptr = (volatile u32 *)(BIOS_PROXY_MAILBOX_ADDR
+                                   + offsetof(struct bios_proxy_mailbox, helper_core_id));
     u32 helper_id = *helper_id_ptr;
     u32 my_id = get_current_apic_id();
     if (helper_id != 0 && my_id == helper_id) {

@@ -470,13 +470,13 @@ bios_proxy_helper_16_entry:
         xorl %eax, %eax
         lldt %ax
 
-        // EBX = mailbox address, ESI = helper_ready address (from trampoline)
+        // EBX = mailbox address (0x9FF00 in EBDA), ESI = helper_ready address (from trampoline)
         movl %ebx, %ebp             // EBP = mailbox address (use as base register)
 
-        // Clear request_pending before entering loop
-        movl $0, 8(%ebp)
+        // Clear request_pending (offset 0) before entering loop
+        movl $0, 0(%ebp)
 
-        // Write our APIC ID to helper_core_id (offset 32) so yield() can detect us.
+        // Write our APIC ID to helper_core_id (offset 24) so yield() can detect us.
         // This avoids cache coherency issues from cross-core writes.
         // Check if x2APIC mode is enabled (bit 10 of IA32_APIC_BASE MSR)
         movl $0x1B, %ecx
@@ -496,7 +496,7 @@ bios_proxy_helper_16_entry:
         shrl $24, %eax              // Shift to get APIC ID in bits 0-7
 
 .Lstore_apic_id:
-        movl %eax, 32(%ebp)         // Write to helper_core_id
+        movl %eax, 24(%ebp)         // Write to helper_core_id (offset 24)
 
         // Signal that helper is ready
         movl $1, (%esi)
@@ -511,7 +511,7 @@ bios_proxy_helper_16_entry:
         movl $1, %esi                   // mwait supported
 
 .Lhelper_poll_loop:
-        cmpl $0, 8(%ebp)
+        cmpl $0, 0(%ebp)
         jne .Lhelper_handle_request
 
         // Check if we should use mwait or pause
@@ -519,13 +519,13 @@ bios_proxy_helper_16_entry:
         jz .Lhelper_do_pause
 
         // MONITOR/MWAIT path
-        leal 8(%ebp), %eax              // EAX = address to monitor
+        leal 0(%ebp), %eax              // EAX = address to monitor (request_pending at offset 0)
         xorl %ecx, %ecx                 // ECX = extensions (0)
         xorl %edx, %edx                 // EDX = hints (0)
         monitor
 
         // Check again after arming monitor (avoid race condition)
-        cmpl $0, 8(%ebp)
+        cmpl $0, 0(%ebp)
         jne .Lhelper_handle_request
 
         // Wait for write to monitored address
@@ -539,28 +539,27 @@ bios_proxy_helper_16_entry:
         jmp .Lhelper_poll_loop
 
 .Lhelper_handle_request:
-        // Mailbox layout:
-        //   0: signature (8 bytes)
-        //   8: request_pending (4 bytes)
-        //  12: func_ptr (4 bytes)
-        //  16: arg_eax (4 bytes)
-        //  20: arg_edx (4 bytes)
-        //  24: arg_ecx (4 bytes)
-        //  28: result (4 bytes)
-        //  32: helper_core_id (4 bytes) - DO NOT OVERWRITE
+        // Mailbox layout (EBDA version, no signature):
+        //   0: request_pending (4 bytes)
+        //   4: func_ptr (4 bytes)
+        //   8: arg_eax (4 bytes)
+        //  12: arg_edx (4 bytes)
+        //  16: arg_ecx (4 bytes)
+        //  20: result (4 bytes)
+        //  24: helper_core_id (4 bytes) - DO NOT OVERWRITE
 
         // Load function pointer and args (regparm=3: EAX, EDX, ECX)
-        movl 12(%ebp), %edi
-        movl 24(%ebp), %ecx
-        movl 20(%ebp), %edx
-        movl 16(%ebp), %eax
+        movl 4(%ebp), %edi
+        movl 16(%ebp), %ecx
+        movl 12(%ebp), %edx
+        movl 8(%ebp), %eax
 
         // Call the function (ESI is callee-saved, so mwait flag preserved)
         calll *%edi
 
         // Store result and signal completion
-        movl %eax, 28(%ebp)
-        movl $0, 8(%ebp)
+        movl %eax, 20(%ebp)
+        movl $0, 0(%ebp)
 
         jmp .Lhelper_poll_loop
 
