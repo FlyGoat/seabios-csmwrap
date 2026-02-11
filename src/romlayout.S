@@ -429,6 +429,7 @@ __csm_return:
  ****************************************************************/
 
         // Signature for CSMWrap to find the 16-bit entry point
+        .balign 8
         .global bios_proxy_helper_16_signature
 bios_proxy_helper_16_signature:
         .ascii "PRXY16EP"
