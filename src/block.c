@@ -507,6 +507,7 @@ fill_edd(struct segoff_s edd, struct drive_s *drive_fl)
 void
 block_setup(void)
 {
+    create_bounce_buf();
     floppy_setup();
     ata_setup();
     ahci_setup();
@@ -539,6 +540,76 @@ default_process_op(struct disk_op_s *op)
     }
 }
 
+// Bounce DMA read/write through an identity-mapped buffer for V86 safety.
+//
+// In V86 mode (e.g., under Windows 386 Enhanced Mode), the caller's buffer
+// is a virtual address that may map to a different physical page after the
+// VMM reclaims and remaps DOS memory.  DMA controllers (AHCI, NVMe, etc.)
+// use physical addresses, causing data corruption when virtual != physical.
+//
+// Fix: memcpy_fl in 16-bit mode uses segment:offset addressing which goes
+// through V86 page tables, correctly reaching the caller's buffer.  The
+// bounce buffer is allocated by malloc_low (not in DOS free MCBs), so the
+// VMM keeps it identity-mapped.  We copy caller data <-> bounce in 16-bit
+// mode, then let the 32-bit helper core DMA to/from the bounce buffer.
+//
+// Transfers larger than the bounce buffer are broken into chunks.
+static int
+process_op_32_v86bounce(struct disk_op_s *op)
+{
+    ASSERT16();
+    u8 *bounce = GET_GLOBAL(bounce_buf_fl);
+    if (!bounce)
+        return call32(process_op_32, MAKE_FLATPTR(GET_SEG(SS), op),
+                      DISK_RET_EPARAM);
+
+    u16 blksize = GET_FLATPTR(op->drive_fl->blksize);
+    u16 max_chunk = CDROM_SECTOR_SIZE / blksize;
+    if (!max_chunk)
+        max_chunk = 1;
+
+    int iswrite = (op->command == CMD_WRITE);
+    void *orig_buf = op->buf_fl;
+    u16 orig_count = op->count;
+    u64 orig_lba = op->lba;
+    u16 done = 0;
+    int rc = 0;
+
+    while (done < orig_count) {
+        u16 this_count = orig_count - done;
+        if (this_count > max_chunk)
+            this_count = max_chunk;
+
+        u32 this_bytes = (u32)this_count * blksize;
+        void *this_buf = orig_buf + (u32)done * blksize;
+
+        if (iswrite)
+            memcpy_fl(bounce, this_buf, this_bytes);
+
+        op->buf_fl = bounce;
+        op->count = this_count;
+        op->lba = orig_lba + done;
+
+        rc = call32(process_op_32, MAKE_FLATPTR(GET_SEG(SS), op),
+                    DISK_RET_EPARAM);
+
+        if (rc) {
+            done += op->count;
+            break;
+        }
+
+        if (!iswrite)
+            memcpy_fl(this_buf, bounce, this_bytes);
+
+        done += this_count;
+    }
+
+    op->buf_fl = orig_buf;
+    op->count = done;
+    op->lba = orig_lba;
+    return rc;
+}
+
 // Command dispatch for disk drivers that run in both 16bit and 32bit mode
 static int
 process_op_both(struct disk_op_s *op)
@@ -561,7 +632,11 @@ process_op_both(struct disk_op_s *op)
     default:
         if (!MODESEGMENT)
             return DISK_RET_EPARAM;
-        // In 16bit mode and driver not found - try in 32bit mode
+        // In 16bit mode and driver not found - try in 32bit mode.
+        // Use bounce buffer for read/write to handle V86 mode where
+        // DMA addresses may differ from virtual addresses.
+        if (op->command == CMD_READ || op->command == CMD_WRITE)
+            return process_op_32_v86bounce(op);
         return call32(process_op_32, MAKE_FLATPTR(GET_SEG(SS), op)
                       , DISK_RET_EPARAM);
     }
