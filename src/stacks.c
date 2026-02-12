@@ -31,22 +31,27 @@
  * efficient low-latency wake-up.
  ****************************************************************/
 
-/*
- * Fixed mailbox address in EBDA (Extended BIOS Data Area).
- * EBDA starts at 0x9F800 (2KB), SeaBIOS uses ~0x121 bytes at the start.
- * Mailbox is placed at 0x9FF00, well clear of SeaBIOS's EBDA usage.
- * This is normal RAM accessible by all CPU cores without MTRR configuration.
- */
-#define BIOS_PROXY_MAILBOX_ADDR 0x9FF00
+/* Unique signature for CSMWrap to locate this structure */
+#define BIOS_PROXY_SIGNATURE 0x79787250504D5343ULL  /* "CSMPPrxy" */
 
 struct bios_proxy_mailbox {
-    volatile u32 request_pending; /* offset 0: Non-zero when request waiting */
-    u32 func_ptr;               /* offset 4: 32-bit flat function pointer */
-    u32 arg_eax;                /* offset 8: Argument passed in EAX */
-    u32 arg_edx;                /* offset 12: Argument passed in EDX */
-    u32 arg_ecx;                /* offset 16: Argument passed in ECX */
-    u32 result;                 /* offset 20: Return value from function */
-    u32 helper_core_id;         /* offset 24: APIC ID of helper core */
+    u64 signature;              /* offset 0: BIOS_PROXY_SIGNATURE - must be first */
+    volatile u32 request_pending; /* offset 8: Non-zero when request waiting */
+    u32 func_ptr;               /* offset 12: 32-bit flat function pointer */
+    u32 arg_eax;                /* offset 16: Argument passed in EAX */
+    u32 arg_edx;                /* offset 20: Argument passed in EDX */
+    u32 arg_ecx;                /* offset 24: Argument passed in ECX */
+    u32 result;                 /* offset 28: Return value from function */
+    u32 helper_core_id;         /* offset 32: APIC ID of helper core */
+};
+
+/*
+ * Mailbox in F-segment (ROM area) so it stays at a fixed offset in the binary.
+ * CSMWrap finds this by scanning for the signature and calculates the runtime
+ * address. The F-segment is safe from OS writes (treated as ROM shadow).
+ */
+struct bios_proxy_mailbox bios_proxy VARFSEG __aligned(8) = {
+    .signature = BIOS_PROXY_SIGNATURE,
 };
 
 
@@ -286,19 +291,49 @@ call16_smm(u32 eax, u32 edx, void *func)
 }
 
 /*
- * Mailbox segment for accessing EBDA mailbox from 16-bit code.
- * Linear address 0x9FF00 = segment 0x9FF0, offset 0x0000
+ * Find the bios_proxy mailbox by scanning for its signature in the F-segment.
+ * Returns the linear address of the mailbox, or 0 if not found.
  */
-#define MBX_SEG 0x9FF0
+static u32
+find_bios_proxy(void)
+{
+    u32 offset;
+    u32 expect_lo = (u32)BIOS_PROXY_SIGNATURE;
+    u32 expect_hi = (u32)(BIOS_PROXY_SIGNATURE >> 32);
+
+    for (offset = 0; offset < 0xFFF0; offset += 8) {
+        u32 sig_lo = GET_FARVAR(SEG_BIOS, *(u32 *)offset);
+        u32 sig_hi = GET_FARVAR(SEG_BIOS, *(u32 *)(offset + 4));
+
+        if (sig_lo == expect_lo && sig_hi == expect_hi)
+            return (SEG_BIOS << 4) + offset;
+    }
+    return 0;
+}
+
+void
+init_bios_proxy_addr(void)
+{
+    ASSERT32FLAT();
+    /* Force the linker to include bios_proxy in the binary */
+    if (bios_proxy.signature != BIOS_PROXY_SIGNATURE)
+        return;
+}
 
 /*
- * Access mailbox fields using segment:offset addressing.
- * Similar to GET_BDA/SET_BDA macros but for our EBDA mailbox.
+ * Access mailbox fields via computed segment:offset from a linear address.
  */
-#define GET_MBX(field) \
-    GET_FARVAR(MBX_SEG, ((struct bios_proxy_mailbox *)0)->field)
-#define SET_MBX(field, val) \
-    SET_FARVAR(MBX_SEG, ((struct bios_proxy_mailbox *)0)->field, (val))
+#define GET_PROXY_AT(mb, field) ({                                              \
+    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
+    GET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
+               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr));         \
+})
+
+#define SET_PROXY_AT(mb, field, val) do {                                       \
+    u32 __addr = (mb) + offsetof(struct bios_proxy_mailbox, field);             \
+    SET_FARVAR(FLATPTR_TO_SEG(__addr),                                          \
+               *(typeof(bios_proxy.field) *)FLATPTR_TO_OFFSET(__addr), (val));  \
+} while (0)
 
 static u32
 call32_proxy(void *func, u32 eax, u32 edx, u32 ecx)
@@ -306,27 +341,29 @@ call32_proxy(void *func, u32 eax, u32 edx, u32 ecx)
     /*
      * Send request to helper core and wait for response.
      * Helper is guaranteed to be ready - CSMWrap waits for it before booting SeaBIOS.
-     * Mailbox is at fixed EBDA address, accessed via MBX_SEG segment.
      */
+    u32 mb = find_bios_proxy();
+    if (!mb)
+        return 0;
 
     /* Set up the request */
-    SET_MBX(func_ptr, (u32)func);
-    SET_MBX(arg_eax, eax);
-    SET_MBX(arg_edx, edx);
-    SET_MBX(arg_ecx, ecx);
+    SET_PROXY_AT(mb, func_ptr, (u32)func);
+    SET_PROXY_AT(mb, arg_eax, eax);
+    SET_PROXY_AT(mb, arg_edx, edx);
+    SET_PROXY_AT(mb, arg_ecx, ecx);
 
     /* Compiler barrier before signaling request */
     asm volatile("" ::: "memory");
 
     /* Signal request */
-    SET_MBX(request_pending, 1);
+    SET_PROXY_AT(mb, request_pending, 1);
 
     /* Wait for helper to complete (clears request_pending when done) */
-    while (GET_MBX(request_pending)) {
+    while (GET_PROXY_AT(mb, request_pending)) {
         asm volatile("pause" ::: "memory");
     }
 
-    return GET_MBX(result);
+    return GET_PROXY_AT(mb, result);
 }
 
 // Call a 32bit SeaBIOS function from a 16bit SeaBIOS function.
@@ -696,8 +733,7 @@ yield(void)
     // On helper core, don't try thread switching - the helper runs on a
     // separate stack that isn't a valid thread_info structure.
     // Check by comparing current APIC ID against the helper's stored ID.
-    // Mailbox is at fixed EBDA address.
-    volatile u32 *helper_id_ptr = (volatile u32 *)(BIOS_PROXY_MAILBOX_ADDR
+    volatile u32 *helper_id_ptr = (volatile u32 *)((u32)&bios_proxy
                                    + offsetof(struct bios_proxy_mailbox, helper_core_id));
     u32 helper_id = *helper_id_ptr;
     u32 my_id = get_current_apic_id();
