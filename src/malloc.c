@@ -472,22 +472,35 @@ malloc_csm_preinit(u32 low_pmm, u32 low_pmm_size, u32 hi_pmm, u32 hi_pmm_size)
 
 u32 LegacyRamSize VARFSEG;
 
-// Calculate the maximum ramsize (less than 4gig) from e820 map.
+// Calculate the maximum contiguous ramsize (less than 4gig) from e820 map.
+// Finds the end of contiguous usable memory starting from 1MB, stopping at
+// the first non-RAM/non-ACPI gap.  This ensures INT 15h AH=88h and AX=E801h
+// only report memory that is actually usable, preventing HIMEM.SYS from
+// handing out XMS handles that overlap reserved regions.
 static void
 calcRamSize(void)
 {
-    u32 rs = 0;
-    int i;
-    for (i=e820_count-1; i>=0; i--) {
-        struct e820entry *en = &e820_list[i];
-        u64 end = en->start + en->size;
-        u32 type = en->type;
-        if (end <= 0xffffffff && (type == E820_ACPI || type == E820_RAM)) {
-            rs = end;
-            break;
+    u32 rs = 1024*1024; // start from 1MB
+    int progress = 1;
+    while (progress) {
+        progress = 0;
+        int i;
+        for (i=0; i<e820_count; i++) {
+            struct e820entry *en = &e820_list[i];
+            u64 end = en->start + en->size;
+            u32 type = en->type;
+            if (type != E820_RAM && type != E820_ACPI)
+                continue;
+            if (end > 0xffffffff)
+                continue;
+            // Extend rs if this region is contiguous with (or overlaps) it
+            if (en->start <= rs && end > rs) {
+                rs = end;
+                progress = 1;
+            }
         }
     }
-    LegacyRamSize = rs >= 1024*1024 ? rs : 1024*1024;
+    LegacyRamSize = rs;
 }
 
 // Update pointers after code relocation.
