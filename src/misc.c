@@ -123,6 +123,21 @@ struct bios_config_table_s BIOS_CONFIG_TABLE VARFSEGFIXED(0xe6f5) = {
     .feature5 = 0,
 };
 
+// Phoenix "PTL" A20 compatibility signature for HIMEM.SYS (MS-DOS 6.22).
+// HIMEM.SYS auto-detects A20 handlers via INT 15h/AH=C0h: it reads the
+// config table size field, then checks for "PTL" + bit 7 at
+// table_base + size + 6.  With size=8, the signature must be at 0xE703.
+// When found, HIMEM selects /M:3 (BIOS INT 15h A20 handler via F000:FF82,
+// defined in romlayout.S) instead of the /M:2 PS/2 port 0x92 handler whose
+// 65536-iteration readback poll hangs on modern Intel where A20 is
+// permanently enabled.
+// VARFSEGFIXED needs a literal for the linker section name, so verify
+// the address matches the table layout at compile time.
+#define PTL_SIG_ADDR (0xe6f5 + (sizeof(BIOS_CONFIG_TABLE) - 2) + 6)
+_Static_assert(PTL_SIG_ADDR == 0xe703,
+    "PhoenixPTLSig address must match BIOS_CONFIG_TABLE layout");
+u8 PhoenixPTLSig[] VARFSEGFIXED(0xe703) = {'P', 'T', 'L', 0x80};
+
 
 /****************************************************************
  * GDT and IDT tables
